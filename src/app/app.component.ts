@@ -50,6 +50,18 @@ interface RoleReview {
   note: string;
 }
 
+interface CheckWaiver {
+  id: string;
+  checkId: string;
+  checkTitle: string;
+  checkCategory: string;
+  reason: string;
+  approver: string;
+  fingerprint: string;
+  createdAt: string;
+  revokedAt?: string;
+}
+
 interface VersionSnapshot {
   id: string;
   label: string;
@@ -65,6 +77,7 @@ interface VersionSnapshot {
   languages: LanguageVersion[];
   note: string;
   emergency: boolean;
+  waivers?: CheckWaiver[];
 }
 
 interface NoticeDraft {
@@ -82,6 +95,7 @@ interface NoticeDraft {
   discussions: Discussion[];
   reviews: RoleReview[];
   versions: VersionSnapshot[];
+  waivers: CheckWaiver[];
   status: NoticeStatus;
   version: string;
   lockedAt?: string;
@@ -123,6 +137,30 @@ function uid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// 事件要素、发布配置、各语言版本与讨论状态的摘要指纹。
+// 任何一项变化都会使已登记的处理失效，警告重新出现。
+function contentFingerprint(draft: NoticeDraft): string {
+  const payload = {
+    title: draft.title,
+    eventType: draft.eventType,
+    severity: draft.severity,
+    scope: draft.scope,
+    eventAt: draft.eventAt,
+    effectiveAt: draft.effectiveAt,
+    expiresAt: draft.expiresAt,
+    channels: [...draft.channels].sort(),
+    requiredLocales: [...draft.requiredLocales].sort(),
+    languages: draft.languages.map((language) => [
+      language.id, language.title, language.body, language.translator, language.reviewed
+    ]),
+    discussions: draft.discussions.map((discussion) => [discussion.id, discussion.resolved])
+  };
+  const text = JSON.stringify(payload);
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
+}
+
 function initialDraft(): NoticeDraft {
   const first: VersionSnapshot = {
     id: 'version-1-0-0',
@@ -138,6 +176,7 @@ function initialDraft(): NoticeDraft {
     channels: ['短信', '广播', '社区大屏'],
     note: '发布范围覆盖滨海新区。',
     emergency: false,
+    waivers: [],
     languages: [
       {
         id: 'zh-CN', locale: 'zh-CN', name: '简体中文', title: '台风“海燕”橙色预警通知',
@@ -177,7 +216,7 @@ function initialDraft(): NoticeDraft {
     ]
   };
 
-  return {
+  const draft: NoticeDraft = {
     id: 'notice-haiyan-2026',
     title: '台风“海燕”橙色预警及人员转移通知',
     eventType: '台风',
@@ -218,11 +257,25 @@ function initialDraft(): NoticeDraft {
       { role: '发布人', owner: '值班中心', status: 'pending', note: '' }
     ],
     versions: [first, second],
+    waivers: [],
     status: 'in-review',
     version: '1.2.0-draft',
     emergencyRevision: false,
     updatedAt: new Date().toISOString()
   };
+
+  // 示例：日文版复核提醒已由值班中心登记处理，内容一旦变更即自动失效。
+  draft.waivers = [{
+    id: 'waiver-ja-review',
+    checkId: 'review-ja',
+    checkTitle: '日本語尚未完成语言复核',
+    checkCategory: '版本审阅',
+    reason: '翻译组已线下确认日文措辞，发布前由翻译角色补勾复核。',
+    approver: '值班中心',
+    fingerprint: contentFingerprint(draft),
+    createdAt: '2026-09-25T08:40:00+08:00'
+  }];
+  return draft;
 }
 
 const TEMPLATES: NoticeTemplate[] = [
@@ -310,6 +363,9 @@ export class AppComponent implements OnInit {
   compareBaseId = '';
   compareTargetId = '';
   lastSavedAt = '';
+  waiverEditorId: string | null = null;
+  waiverReason = '';
+  waiverApprover = '';
   history: NoticeDraft[] = [];
   future: NoticeDraft[] = [];
 
@@ -443,6 +499,37 @@ export class AppComponent implements OnInit {
     return this.checks.filter((check) => check.level === 'warning').length;
   }
 
+  get currentFingerprint(): string {
+    return contentFingerprint(this.draft);
+  }
+
+  waiversFor(checkId: string): CheckWaiver[] {
+    return (this.draft.waivers ?? []).filter((waiver) => waiver.checkId === checkId);
+  }
+
+  activeWaiver(checkId: string): CheckWaiver | undefined {
+    const fingerprint = this.currentFingerprint;
+    return this.waiversFor(checkId).filter((waiver) => !waiver.revokedAt && waiver.fingerprint === fingerprint).at(-1);
+  }
+
+  waiverHistory(checkId: string): CheckWaiver[] {
+    const active = this.activeWaiver(checkId);
+    return this.waiversFor(checkId).filter((waiver) => waiver !== active).slice().reverse();
+  }
+
+  get unhandledWarningCount(): number {
+    return this.checks.filter((check) => check.level === 'warning' && !this.activeWaiver(check.id)).length;
+  }
+
+  get handledWarningCount(): number {
+    return this.checks.filter((check) => check.level === 'warning' && !!this.activeWaiver(check.id)).length;
+  }
+
+  get activeWaivers(): CheckWaiver[] {
+    const fingerprint = this.currentFingerprint;
+    return (this.draft.waivers ?? []).filter((waiver) => !waiver.revokedAt && waiver.fingerprint === fingerprint);
+  }
+
   get isLocked(): boolean {
     return this.draft.status === 'locked';
   }
@@ -533,6 +620,39 @@ export class AppComponent implements OnInit {
     });
   }
 
+  openWaiverEditor(check: CheckResult): void {
+    if (this.isLocked) return;
+    this.waiverEditorId = check.id;
+    this.waiverReason = '';
+    this.waiverApprover = this.draft.reviews.find((review) => review.role === this.currentRole)?.owner ?? '';
+  }
+
+  submitWaiver(check: CheckResult): void {
+    const reason = this.waiverReason.trim();
+    const approver = this.waiverApprover.trim();
+    if (!reason || !approver || this.isLocked || this.activeWaiver(check.id)) return;
+    this.commit((draft) => {
+      draft.waivers.push({
+        id: uid('waiver'), checkId: check.id, checkTitle: check.title, checkCategory: check.category,
+        reason, approver, fingerprint: contentFingerprint(draft), createdAt: new Date().toISOString()
+      });
+    });
+    this.waiverEditorId = null;
+    this.waiverReason = '';
+    this.toastr.success(`「${check.title}」已登记处理，签核人：${approver}。内容变更后该登记自动失效。`, '处理已登记');
+  }
+
+  revokeWaiver(waiverId: string): void {
+    if (this.isLocked) return;
+    const waiver = (this.draft.waivers ?? []).find((item) => item.id === waiverId);
+    if (!waiver || waiver.revokedAt) return;
+    this.commit((draft) => {
+      const target = draft.waivers.find((item) => item.id === waiverId);
+      if (target) target.revokedAt = new Date().toISOString();
+    });
+    this.toastr.info(`「${waiver.checkTitle}」的处理登记已撤销，警告重新生效。`, '登记已撤销');
+  }
+
   setReviewStatus(role: RoleReview['role'], status: ReviewStatus): void {
     this.commit((draft) => {
       const review = draft.reviews.find((item) => item.role === role);
@@ -570,11 +690,14 @@ export class AppComponent implements OnInit {
       this.activeView = 'checks';
       return;
     }
+    const archivedWaivers = clone(this.activeWaivers);
     const snapshot: VersionSnapshot = {
       id: uid('version'), label: '最终锁定版本', createdAt: new Date().toISOString(), version: this.nextVersion,
       title: this.draft.title, severity: this.draft.severity, scope: this.draft.scope, eventAt: this.draft.eventAt,
       effectiveAt: this.draft.effectiveAt, expiresAt: this.draft.expiresAt, channels: [...this.draft.channels],
-      languages: clone(this.draft.languages), note: '发布前检查通过并锁定。', emergency: false
+      languages: clone(this.draft.languages), emergency: false,
+      note: archivedWaivers.length ? `发布前检查通过并锁定，留档处理登记 ${archivedWaivers.length} 条。` : '发布前检查通过并锁定。',
+      waivers: archivedWaivers
     };
     this.commit((draft) => {
       draft.versions.push(snapshot);
@@ -584,7 +707,11 @@ export class AppComponent implements OnInit {
     });
     this.compareBaseId = this.draft.versions.at(-2)?.id ?? '';
     this.compareTargetId = this.draft.versions.at(-1)?.id ?? '';
-    this.toastr.success(`版本 ${snapshot.version} 已锁定。`, '最终版本已冻结');
+    const pending = this.unhandledWarningCount;
+    this.toastr.success(
+      pending ? `版本 ${snapshot.version} 已锁定；另有 ${pending} 条警告未登记处理，已保留在检查列表。` : `版本 ${snapshot.version} 已锁定。`,
+      '最终版本已冻结'
+    );
   }
 
   startEmergencyRevision(): void {
@@ -669,6 +796,10 @@ export class AppComponent implements OnInit {
     value.discussions ??= [];
     value.reviews ??= [];
     value.requiredLocales ??= ['zh-CN'];
+    value.waivers ??= [];
+    value.versions.forEach((version) => {
+      version.waivers ??= [];
+    });
     return value;
   }
 

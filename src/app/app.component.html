@@ -25,7 +25,7 @@
         <div><strong>{{ draft.languages.length }}</strong><span>语言版本</span></div>
         <div><strong>{{ draft.channels.length }}</strong><span>发布渠道</span></div>
         <div><strong class="danger-text">{{ blockingChecks.length }}</strong><span>阻断问题</span></div>
-        <div><strong class="warning-text">{{ warningCount }}</strong><span>待确认提醒</span></div>
+        <div><strong class="warning-text">{{ unhandledWarningCount }}</strong><span>待确认提醒</span></div>
       </div>
     </section>
 
@@ -157,16 +157,44 @@
 
     <section *ngIf="activeView === 'checks'" class="view-section">
       <div class="section-heading">
-        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项需要人工确认并承担责任。</p></div>
+        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项可登记处理原因与签核人，正文、事件要素或语言版本一旦变化，登记自动失效并重新出现。</p></div>
         <button nbButton status="danger" size="large" (click)="lockVersion()" [disabled]="isLocked">检查通过后锁定最终版本</button>
       </div>
       <div class="check-layout">
         <div class="check-list">
-          <article *ngFor="let check of checks; let i = index" class="check-card" [class.error]="check.level === 'error'" [class.warning]="check.level === 'warning'" [class.info]="check.level === 'info'">
+          <article *ngFor="let check of checks; let i = index" class="check-card" [class.error]="check.level === 'error'" [class.warning]="check.level === 'warning'" [class.info]="check.level === 'info'" [class.handled]="check.level === 'warning' && activeWaiver(check.id)">
             <div class="check-index">{{ i + 1 }}</div>
             <div class="check-copy">
               <div class="check-meta"><span>{{ check.category }}</span><b>{{ check.level === 'error' ? '必须修复' : check.level === 'warning' ? '建议确认' : '提示' }}</b></div>
               <h3>{{ check.title }}</h3><p>{{ check.detail }}</p>
+              <div *ngIf="check.level === 'warning'" class="waiver-box">
+                <div *ngIf="activeWaiver(check.id) as waiver" class="waiver-active">
+                  <div class="waiver-active-head">
+                    <span class="waiver-badge">已登记处理</span>
+                    <span>{{ waiver.approver }} 签核 · {{ formatDateTime(waiver.createdAt) }}</span>
+                    <button nbButton size="tiny" status="basic" [disabled]="isLocked" (click)="revokeWaiver(waiver.id)">撤销登记</button>
+                  </div>
+                  <p class="waiver-reason">{{ waiver.reason }}</p>
+                </div>
+                <ng-container *ngIf="!activeWaiver(check.id)">
+                  <button *ngIf="waiverEditorId !== check.id" nbButton size="tiny" status="warning" outline [disabled]="isLocked" (click)="openWaiverEditor(check)">登记处理原因与签核人</button>
+                  <div *ngIf="waiverEditorId === check.id" class="waiver-form">
+                    <input nbInput fullWidth [(ngModel)]="waiverApprover" placeholder="签核人（对本次处理负责）">
+                    <textarea nbInput fullWidth rows="2" [(ngModel)]="waiverReason" placeholder="处理原因：为什么可以跳过该提醒、依据是什么…"></textarea>
+                    <div class="waiver-form-actions">
+                      <button nbButton size="tiny" status="primary" [disabled]="!waiverReason.trim() || !waiverApprover.trim()" (click)="submitWaiver(check)">确认登记</button>
+                      <button nbButton size="tiny" status="basic" (click)="waiverEditorId = null">取消</button>
+                    </div>
+                  </div>
+                </ng-container>
+                <div *ngIf="waiverHistory(check.id).length" class="waiver-history">
+                  <p *ngFor="let item of waiverHistory(check.id)">
+                    <b [class.revoked]="item.revokedAt">{{ item.revokedAt ? '已撤销' : '已失效' }}</b>
+                    <span>{{ item.approver }} · {{ formatDateTime(item.createdAt) }}</span>
+                    {{ item.reason }}
+                  </p>
+                </div>
+              </div>
             </div>
             <button nbButton size="small" status="basic" (click)="showCheck(check)">定位</button>
           </article>
@@ -180,9 +208,11 @@
               <p>发布准备度</p>
               <div class="score-row"><span>阻断</span><b class="danger-text">{{ blockingChecks.length }}</b></div>
               <div class="score-row"><span>警告</span><b class="warning-text">{{ warningCount }}</b></div>
+              <div class="score-row"><span>已登记处理</span><b>{{ handledWarningCount }}</b></div>
               <div class="score-row"><span>总检查</span><b>{{ checks.length }}</b></div>
             </nb-card-body>
           </nb-card>
+          <nb-alert status="warning" *ngIf="unhandledWarningCount > 0">还有 {{ unhandledWarningCount }} 条警告未登记处理。警告不阻止锁定，但登记原因与签核人后可追溯。</nb-alert>
           <nb-alert status="info" *ngIf="draft.status === 'in-review'">当前稿处于审阅状态。锁定后如需修改，必须发起紧急修订。</nb-alert>
         </aside>
       </div>
@@ -252,7 +282,7 @@
             <nb-card-body class="timeline">
               <article *ngFor="let version of draft.versions; let last = last" [class.current]="last">
                 <span></span>
-                <div><b>{{ version.version }}</b><strong>{{ version.label }}</strong><p>{{ formatDateTime(version.createdAt) }} · {{ version.channels.length }} 个渠道</p><small *ngIf="version.emergency">紧急修订</small></div>
+                <div><b>{{ version.version }}</b><strong>{{ version.label }}</strong><p>{{ formatDateTime(version.createdAt) }} · {{ version.channels.length }} 个渠道</p><small *ngIf="version.emergency">紧急修订</small><small *ngIf="version.waivers?.length">留档处理 {{ version.waivers?.length }} 条</small></div>
               </article>
             </nb-card-body>
           </nb-card>
@@ -285,6 +315,14 @@
               <article *ngFor="let version of draft.versions">
                 <div><span>{{ version.version }}</span><h3>{{ version.title }}</h3><p>{{ version.note }}</p></div>
                 <dl><dt>严重程度</dt><dd>{{ version.severity }}</dd><dt>失效</dt><dd>{{ formatDateTime(version.expiresAt) }}</dd></dl>
+                <div class="archived-waivers" *ngIf="version.waivers?.length">
+                  <strong>随稿留档的处理登记（{{ version.waivers?.length }}）</strong>
+                  <p *ngFor="let waiver of version.waivers">
+                    <b>{{ waiver.checkTitle }}</b>
+                    <span>{{ waiver.checkCategory }} · {{ waiver.approver }} 签核 · {{ formatDateTime(waiver.createdAt) }}</span>
+                    {{ waiver.reason }}
+                  </p>
+                </div>
               </article>
             </nb-card-body>
           </nb-card>
