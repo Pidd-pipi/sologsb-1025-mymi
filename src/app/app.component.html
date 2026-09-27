@@ -25,7 +25,7 @@
         <div><strong>{{ draft.languages.length }}</strong><span>语言版本</span></div>
         <div><strong>{{ draft.channels.length }}</strong><span>发布渠道</span></div>
         <div><strong class="danger-text">{{ blockingChecks.length }}</strong><span>阻断问题</span></div>
-        <div><strong class="warning-text">{{ warningCount }}</strong><span>待确认提醒</span></div>
+        <div><strong class="warning-text">{{ unhandledWarningCount }}</strong><span>待确认提醒</span></div>
       </div>
     </section>
 
@@ -157,18 +157,37 @@
 
     <section *ngIf="activeView === 'checks'" class="view-section">
       <div class="section-heading">
-        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项需要人工确认并承担责任。</p></div>
+        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项可登记处理原因与签核人，正文或事件要素变更后处理自动失效、需重新登记。</p></div>
         <button nbButton status="danger" size="large" (click)="lockVersion()" [disabled]="isLocked">检查通过后锁定最终版本</button>
       </div>
       <div class="check-layout">
         <div class="check-list">
-          <article *ngFor="let check of checks; let i = index" class="check-card" [class.error]="check.level === 'error'" [class.warning]="check.level === 'warning'" [class.info]="check.level === 'info'">
+          <article *ngFor="let check of checks; let i = index" class="check-card" [class.error]="check.level === 'error'" [class.warning]="check.level === 'warning'" [class.info]="check.level === 'info'" [class.handled]="isCheckHandled(check)">
             <div class="check-index">{{ i + 1 }}</div>
             <div class="check-copy">
-              <div class="check-meta"><span>{{ check.category }}</span><b>{{ check.level === 'error' ? '必须修复' : check.level === 'warning' ? '建议确认' : '提示' }}</b></div>
+              <div class="check-meta"><span>{{ check.category }}</span><b>{{ check.level === 'error' ? '必须修复' : check.level === 'warning' ? '建议确认' : '提示' }}</b><em *ngIf="isCheckHandled(check)">已登记处理</em></div>
               <h3>{{ check.title }}</h3><p>{{ check.detail }}</p>
+              <div class="ack-record" *ngIf="isCheckHandled(check)">
+                <div *ngFor="let ack of acknowledgementsFor(check.id)">
+                  <header><strong>{{ ack.approver }}</strong><span>{{ ack.role }}签核</span><time>{{ formatDateTime(ack.createdAt) }}</time></header>
+                  <p>{{ ack.reason }}</p>
+                </div>
+              </div>
+              <p class="ack-expired" *ngIf="!isCheckHandled(check) && expiredAcknowledgementsFor(check.id).length">此前登记的处理已因内容变更失效，请重新登记。</p>
+              <div class="ack-form" *ngIf="ackFormCheckId === check.id">
+                <textarea nbInput fullWidth rows="2" [(ngModel)]="ackReason" placeholder="处理原因（必填）：说明为何可以跳过该提醒…"></textarea>
+                <input nbInput fullWidth [(ngModel)]="ackApprover" placeholder="签核人">
+                <div>
+                  <button nbButton size="small" status="primary" [disabled]="!ackReason.trim() || !ackApprover.trim()" (click)="submitAcknowledgement(check)">确认登记</button>
+                  <button nbButton size="small" status="basic" (click)="cancelAckForm()">取消</button>
+                </div>
+              </div>
             </div>
-            <button nbButton size="small" status="basic" (click)="showCheck(check)">定位</button>
+            <div class="check-actions">
+              <button nbButton size="small" status="basic" (click)="showCheck(check)">定位</button>
+              <button *ngIf="check.level !== 'error' && !isCheckHandled(check) && ackFormCheckId !== check.id" nbButton size="small" status="warning" [disabled]="isLocked" (click)="openAckForm(check)">登记处理</button>
+              <button *ngIf="isCheckHandled(check)" nbButton size="small" status="basic" [disabled]="isLocked" (click)="undoAcknowledgement(check.id)">撤销处理</button>
+            </div>
           </article>
           <div *ngIf="!checks.length" class="all-clear"><strong>全部检查已通过</strong><p>可以进入角色确认并锁定最终版本。</p></div>
         </div>
@@ -180,7 +199,9 @@
               <p>发布准备度</p>
               <div class="score-row"><span>阻断</span><b class="danger-text">{{ blockingChecks.length }}</b></div>
               <div class="score-row"><span>警告</span><b class="warning-text">{{ warningCount }}</b></div>
+              <div class="score-row"><span>已登记处理</span><b>{{ activeAcknowledgements.length }}</b></div>
               <div class="score-row"><span>总检查</span><b>{{ checks.length }}</b></div>
+              <button nbButton size="small" status="basic" fullWidth *ngIf="activeAcknowledgements.length" [disabled]="isLocked" (click)="undoLastAcknowledgement()">撤销最近一次处理</button>
             </nb-card-body>
           </nb-card>
           <nb-alert status="info" *ngIf="draft.status === 'in-review'">当前稿处于审阅状态。锁定后如需修改，必须发起紧急修订。</nb-alert>
@@ -283,7 +304,12 @@
             <nb-card-header><div><span class="section-kicker">发布记录</span><h3>版本摘要</h3></div></nb-card-header>
             <nb-card-body class="version-summary">
               <article *ngFor="let version of draft.versions">
-                <div><span>{{ version.version }}</span><h3>{{ version.title }}</h3><p>{{ version.note }}</p></div>
+                <div>
+                  <span>{{ version.version }}</span><h3>{{ version.title }}</h3><p>{{ version.note }}</p>
+                  <ul class="locked-acks" *ngIf="version.acknowledgements?.length">
+                    <li *ngFor="let ack of version.acknowledgements ?? []"><b>{{ ack.checkTitle }}</b>{{ ack.approver }}（{{ ack.role }}）：{{ ack.reason }}</li>
+                  </ul>
+                </div>
                 <dl><dt>严重程度</dt><dd>{{ version.severity }}</dd><dt>失效</dt><dd>{{ formatDateTime(version.expiresAt) }}</dd></dl>
               </article>
             </nb-card-body>

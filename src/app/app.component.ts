@@ -50,6 +50,18 @@ interface RoleReview {
   note: string;
 }
 
+interface CheckAcknowledgement {
+  id: string;
+  checkId: string;
+  checkTitle: string;
+  category: string;
+  fingerprint: string;
+  reason: string;
+  approver: string;
+  role: string;
+  createdAt: string;
+}
+
 interface VersionSnapshot {
   id: string;
   label: string;
@@ -65,6 +77,7 @@ interface VersionSnapshot {
   languages: LanguageVersion[];
   note: string;
   emergency: boolean;
+  acknowledgements?: CheckAcknowledgement[];
 }
 
 interface NoticeDraft {
@@ -80,6 +93,7 @@ interface NoticeDraft {
   requiredLocales: string[];
   languages: LanguageVersion[];
   discussions: Discussion[];
+  acknowledgements: CheckAcknowledgement[];
   reviews: RoleReview[];
   versions: VersionSnapshot[];
   status: NoticeStatus;
@@ -211,6 +225,7 @@ function initialDraft(): NoticeDraft {
         text: '建议明确安置点地址由属地另行发送，避免通知被理解为完整点位清单。', createdAt: '2026-09-25T08:16:00+08:00', resolved: false
       }
     ],
+    acknowledgements: [],
     reviews: [
       { role: '编辑', owner: '林晓', status: 'approved', note: '事件要素完整。' },
       { role: '法务', owner: '陈冉', status: 'changes', note: '转移表述需补充依据。' },
@@ -306,6 +321,9 @@ export class AppComponent implements OnInit {
   selectedSentenceIndex = 0;
   selectedTemplateId = 'typhoon';
   discussionText = '';
+  ackFormCheckId = '';
+  ackReason = '';
+  ackApprover = '';
   currentRole: RoleReview['role'] = '编辑';
   compareBaseId = '';
   compareTargetId = '';
@@ -443,6 +461,32 @@ export class AppComponent implements OnInit {
     return this.checks.filter((check) => check.level === 'warning').length;
   }
 
+  get contentFingerprint(): string {
+    return this.fingerprintOf({
+      title: this.draft.title,
+      eventType: this.draft.eventType,
+      severity: this.draft.severity,
+      scope: this.draft.scope,
+      channels: [...this.draft.channels].sort(),
+      eventAt: this.draft.eventAt,
+      effectiveAt: this.draft.effectiveAt,
+      expiresAt: this.draft.expiresAt,
+      requiredLocales: [...this.draft.requiredLocales].sort(),
+      languages: this.draft.languages.map((language) => ({
+        id: language.id, title: language.title, body: language.body,
+        translator: language.translator, reviewed: language.reviewed
+      }))
+    });
+  }
+
+  get activeAcknowledgements(): CheckAcknowledgement[] {
+    return this.draft.acknowledgements.filter((item) => item.fingerprint === this.contentFingerprint);
+  }
+
+  get unhandledWarningCount(): number {
+    return this.checks.filter((check) => check.level === 'warning' && !this.isCheckHandled(check)).length;
+  }
+
   get isLocked(): boolean {
     return this.draft.status === 'locked';
   }
@@ -533,6 +577,62 @@ export class AppComponent implements OnInit {
     });
   }
 
+  acknowledgementsFor(checkId: string): CheckAcknowledgement[] {
+    return this.draft.acknowledgements.filter((item) => item.checkId === checkId && item.fingerprint === this.contentFingerprint);
+  }
+
+  expiredAcknowledgementsFor(checkId: string): CheckAcknowledgement[] {
+    return this.draft.acknowledgements.filter((item) => item.checkId === checkId && item.fingerprint !== this.contentFingerprint);
+  }
+
+  isCheckHandled(check: CheckResult): boolean {
+    return check.level !== 'error' && this.acknowledgementsFor(check.id).length > 0;
+  }
+
+  openAckForm(check: CheckResult): void {
+    this.ackFormCheckId = check.id;
+    this.ackReason = '';
+    this.ackApprover = this.defaultApprover();
+  }
+
+  cancelAckForm(): void {
+    this.ackFormCheckId = '';
+    this.ackReason = '';
+  }
+
+  submitAcknowledgement(check: CheckResult): void {
+    const reason = this.ackReason.trim();
+    const approver = this.ackApprover.trim();
+    if (!reason || !approver || this.isLocked) return;
+    const fingerprint = this.contentFingerprint;
+    this.commit((draft) => {
+      draft.acknowledgements.push({
+        id: uid('ack'), checkId: check.id, checkTitle: check.title, category: check.category,
+        fingerprint, reason, approver, role: this.currentRole, createdAt: new Date().toISOString()
+      });
+    });
+    this.cancelAckForm();
+    this.toastr.success(`已登记「${check.title}」的处理，签核人：${approver}。正文或事件要素变更后需重新登记。`, '处理已登记');
+  }
+
+  undoAcknowledgement(checkId: string): void {
+    const last = this.acknowledgementsFor(checkId).at(-1);
+    if (!last) return;
+    this.commit((draft) => {
+      draft.acknowledgements = draft.acknowledgements.filter((item) => item.id !== last.id);
+    });
+    this.toastr.info(`已撤销「${last.checkTitle}」由 ${last.approver} 签核的处理，该提醒恢复为待确认。`, '处理已撤销');
+  }
+
+  undoLastAcknowledgement(): void {
+    const last = this.activeAcknowledgements.at(-1);
+    if (!last) {
+      this.toastr.info('没有可撤销的处理登记。', '撤销处理');
+      return;
+    }
+    this.undoAcknowledgement(last.checkId);
+  }
+
   setReviewStatus(role: RoleReview['role'], status: ReviewStatus): void {
     this.commit((draft) => {
       const review = draft.reviews.find((item) => item.role === role);
@@ -570,11 +670,17 @@ export class AppComponent implements OnInit {
       this.activeView = 'checks';
       return;
     }
+    const archivedAcknowledgements = clone(this.activeAcknowledgements);
     const snapshot: VersionSnapshot = {
       id: uid('version'), label: '最终锁定版本', createdAt: new Date().toISOString(), version: this.nextVersion,
       title: this.draft.title, severity: this.draft.severity, scope: this.draft.scope, eventAt: this.draft.eventAt,
       effectiveAt: this.draft.effectiveAt, expiresAt: this.draft.expiresAt, channels: [...this.draft.channels],
-      languages: clone(this.draft.languages), note: '发布前检查通过并锁定。', emergency: false
+      languages: clone(this.draft.languages),
+      note: archivedAcknowledgements.length
+        ? `发布前检查通过并锁定，留档 ${archivedAcknowledgements.length} 条警告处理。`
+        : '发布前检查通过并锁定。',
+      emergency: false,
+      acknowledgements: archivedAcknowledgements
     };
     this.commit((draft) => {
       draft.versions.push(snapshot);
@@ -667,9 +773,24 @@ export class AppComponent implements OnInit {
   private migrate(value: NoticeDraft): NoticeDraft {
     if (!value.id || !Array.isArray(value.languages) || !Array.isArray(value.versions)) return initialDraft();
     value.discussions ??= [];
+    value.acknowledgements ??= [];
     value.reviews ??= [];
     value.requiredLocales ??= ['zh-CN'];
     return value;
+  }
+
+  private defaultApprover(): string {
+    const owners: Record<RoleReview['role'], string> = { '编辑': '林晓', '法务': '陈冉', '翻译': '周晴', '发布人': '值班中心' };
+    return owners[this.currentRole];
+  }
+
+  private fingerprintOf(value: unknown): string {
+    const text = JSON.stringify(value);
+    let hash = 5381;
+    for (let i = 0; i < text.length; i++) {
+      hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(36);
   }
 
   private splitSentences(text: string): string[] {

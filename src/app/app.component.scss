@@ -91,11 +91,27 @@ nb-card-body { padding: 18px 20px 20px; }
 .check-card.error { border-left-color: #cc5b46; }
 .check-card.warning { border-left-color: #dc9c4a; }
 .check-card.info { border-left-color: #5d95b1; }
+.check-card.handled { border-left-color: #7ba98f; background: #fbfdfc; }
 .check-index { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: #557078; background: #eef4f4; font-size: 12px; font-weight: 800; }
 .check-meta { display: flex; gap: 8px; align-items: center; color: #72868d; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .check-meta b { color: #cb5a43; }
+.check-meta em { color: #2f7d5d; font-style: normal; font-weight: 700; }
 .check-card h3 { margin: 5px 0 3px; color: #2d444c; font-size: 14px; }
 .check-card p { margin: 0; color: #71848a; font-size: 12px; }
+.check-actions { display: grid; gap: 6px; align-content: center; }
+.ack-record { margin-top: 9px; display: grid; gap: 7px; }
+.ack-record > div { padding: 8px 11px; border-radius: 9px; background: #eef6f1; border: 1px solid #d8ebe1; }
+.ack-record header { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+.ack-record header strong { color: #2c4f42; }
+.ack-record header span { color: #67907e; }
+.ack-record header time { margin-left: auto; color: #9aabad; }
+.ack-record p { margin: 5px 0 0; color: #48635a; line-height: 1.6; }
+.ack-expired { color: #b0722a !important; font-size: 11px !important; }
+.ack-form { display: grid; gap: 8px; margin-top: 10px; padding: 11px; border: 1px dashed #d7c3a3; border-radius: 10px; background: #fdfaf4; }
+.ack-form > div:last-child { display: flex; gap: 8px; }
+.locked-acks { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+.locked-acks li { padding: 6px 9px; border-radius: 7px; background: #eef6f1; color: #3f5f52; font-size: 11px; line-height: 1.5; }
+.locked-acks b { color: #2c6b4f; margin-right: 6px; }
 .all-clear { padding: 60px 24px; text-align: center; border: 1px dashed #86bca3; border-radius: 16px; background: #f2fbf7; }
 .all-clear strong { color: #287c5f; font-size: 20px; }
 .all-clear p { color: #678b7d; }
@@ -103,6 +119,7 @@ nb-card-body { padding: 18px 20px 20px; }
 .score-card strong { display: block; color: #194b54; font-size: 56px; line-height: 1; }
 .score-card p { margin: 4px 0 16px; color: #7c9096; font-size: 12px; }
 .score-row { padding: 7px 0; border-top: 1px solid #edf1f1; }
+.score-card nb-card-body > button { margin-top: 10px; }
 .role-picker { display: flex; align-items: center; gap: 10px; color: #687e85; font-size: 12px; }
 blockquote { margin: 0 0 15px; padding: 15px 18px; border-left: 4px solid #ef8354; border-radius: 0 10px 10px 0; color: #27424a; background: #fff7f2; font-size: 15px; line-height: 1.7; }
 .discussion-compose { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
